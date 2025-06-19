@@ -26,113 +26,102 @@
     PARENT_LEVELS: 12,
     THROTTLE_DELAY: 100,
     INIT_DELAY: 1000,
-    DEBUG: true
+    DEBUG: true,
   };
 
   const state = {
     observer: null,
     processedElements: new WeakSet(),
     isProcessing: false,
-    throttleTimer: null
+    throttleTimer: null,
   };
 
-  const debug = (msg, data = "") => CONFIG.DEBUG && console.log(`[Remove Unobserved] ${msg}`, data);
+  const logDebug = (msg, data = "") => CONFIG.DEBUG && console.log(`[Remove Unobserved] ${msg}`, data);
 
-  const createPlaceholder = () => {
-    const notice = document.createElement("div");
-    notice.textContent = "Ukryto sugerowaną treść";
-    Object.assign(notice.style, {
-      background: "#f0f2f5",
-      color: "#606770",
-      fontSize: "14px",
-      padding: "12px",
-      margin: "12px 0",
-      borderRadius: "8px",
-      textAlign: "center",
-      fontStyle: "italic"
-    });
-    return notice;
-  };
-
-  const removeAndReplaceContent = () => {
+  const removeMatchingContent = () => {
     if (state.isProcessing) return;
     state.isProcessing = true;
-    debug("Scanning for unwanted content...");
 
-    const spans = document.querySelectorAll("span");
-    let removed = 0;
+    try {
+      const spans = document.querySelectorAll("span");
 
-    for (const span of spans) {
-      if (CONFIG.TARGET_TEXTS.includes(span.textContent.trim()) && !state.processedElements.has(span)) {
+      for (const span of spans) {
+        const match = CONFIG.TARGET_TEXTS.find(txt => span.textContent?.trim().startsWith(txt));
+        if (!match || state.processedElements.has(span)) continue;
+
         state.processedElements.add(span);
 
-        let target = span;
-        for (let i = 0; i < CONFIG.PARENT_LEVELS && target?.parentElement; i++) {
-          target = target.parentElement;
+        let targetElement = span;
+        for (let i = 0; i < CONFIG.PARENT_LEVELS && targetElement?.parentElement; i++) {
+          targetElement = targetElement.parentElement;
         }
 
-        if (target?.tagName === "DIV") {
-          const replacement = createPlaceholder();
-          target.replaceWith(replacement);
-          debug("Replaced unwanted content block", target);
-          removed++;
+        if (targetElement?.tagName === "DIV") {
+          const subtleMessageDiv = document.createElement("div");
+          subtleMessageDiv.style.backgroundColor = "transparent";
+          subtleMessageDiv.style.color = "#666";
+          subtleMessageDiv.style.padding = "0.5em";
+          subtleMessageDiv.style.border = "1px dashed #ccc";
+          subtleMessageDiv.style.borderRadius = "6px";
+          subtleMessageDiv.style.margin = "0.25em 0";
+          subtleMessageDiv.style.fontSize = "0.9em";
+          subtleMessageDiv.style.fontStyle = "italic";
+          subtleMessageDiv.textContent = "Ukryto sugerowaną treść.";
+
+          targetElement.replaceWith(subtleMessageDiv);
+          logDebug("Replaced div with subtle placeholder", subtleMessageDiv);
         }
       }
+    } catch (error) {
+      console.error("[Remove Unobserved] Error:", error);
+    } finally {
+      state.isProcessing = false;
     }
-
-    if (removed) debug(`Total replaced: ${removed}`);
-    state.isProcessing = false;
   };
 
-  const throttleRemove = () => {
-    clearTimeout(state.throttleTimer);
-    state.throttleTimer = setTimeout(() => requestAnimationFrame(removeAndReplaceContent), CONFIG.THROTTLE_DELAY);
+  const scheduleRemoval = () => {
+    if (state.throttleTimer) clearTimeout(state.throttleTimer);
+    state.throttleTimer = setTimeout(() => requestAnimationFrame(removeMatchingContent), CONFIG.THROTTLE_DELAY);
   };
 
   const containsTarget = node => {
     if (node.nodeType !== Node.ELEMENT_NODE) return false;
-    const spans = node.querySelectorAll?.("span") || [];
-    return Array.from(spans).some(span => CONFIG.TARGET_TEXTS.includes(span.textContent.trim()));
+    const spans = node.querySelectorAll?.("span") ?? [];
+    return Array.from(spans).some(span => CONFIG.TARGET_TEXTS.some(txt => span.textContent?.trim().startsWith(txt)));
   };
 
-  const observeMutations = () => {
-    state.observer?.disconnect();
+  const startObserver = () => {
     state.observer = new MutationObserver(mutations => {
-      for (const mutation of mutations) {
-        if ([...mutation.addedNodes].some(containsTarget)) {
-          throttleRemove();
+      for (const { addedNodes } of mutations) {
+        if ([...addedNodes].some(containsTarget)) {
+          logDebug("Detected new target content");
+          scheduleRemoval();
           break;
         }
       }
     });
 
-    state.observer.observe(document.body || document.documentElement, { childList: true, subtree: true });
-    debug("Observer initialized");
-  };
-
-  const initialize = () => {
-    debug("Initializing script");
-    const launch = () => setTimeout(() => {
-      removeAndReplaceContent();
-      observeMutations();
-    }, CONFIG.INIT_DELAY);
-
-    if (document.readyState === "loading") {
-      document.addEventListener("DOMContentLoaded", launch);
-    } else {
-      launch();
-    }
-
-    window.addEventListener("load", () => !state.observer && setTimeout(() => {
-      removeAndReplaceContent();
-      observeMutations();
-    }, 500));
-
-    window.addEventListener("beforeunload", () => {
-      state.observer?.disconnect();
-      clearTimeout(state.throttleTimer);
+    state.observer.observe(document.body || document.documentElement, {
+      childList: true,
+      subtree: true,
     });
   };
 
-  initialize();
+  const start = () => {
+    setTimeout(() => {
+      removeMatchingContent();
+      startObserver();
+    }, CONFIG.INIT_DELAY);
+  };
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", start);
+  } else {
+    start();
+  }
+
+  window.addEventListener("beforeunload", () => {
+    if (state.observer) state.observer.disconnect();
+    if (state.throttleTimer) clearTimeout(state.throttleTimer);
+  });
 })();
