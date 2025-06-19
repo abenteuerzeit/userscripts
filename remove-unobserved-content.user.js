@@ -18,219 +18,194 @@
 (function () {
   "use strict";
 
-  // Configuration
-  const CONFIG = {
-    TARGET_TEXT: "Obserwuj",
-    PARENT_LEVELS: 12,
-    THROTTLE_DELAY: 100,
-    DEBUG: true, // Enable debug for troubleshooting
-    INIT_DELAY: 1000, // Wait 1 second before starting
-  };
+  const exactMatchTexts = ["Obserwuj", "Rolki i krótkie filmy"];
+  const substringMatchTexts = ["grupy, które mogą Ci się spodoba"];
+  const maxParentTraversal = 12;
+  const throttleDelayMs = 100;
+  const initialDelayMs = 1000;
+  const enableDebugLogs = true;
 
-  // State management
-  const state = {
-    observer: null,
-    processedElements: new WeakSet(),
-    isProcessing: false,
-    throttleTimer: null,
-  };
+  let mutationObserver = null;
+  let elementsProcessed = new WeakSet();
+  let currentlyProcessing = false;
+  let throttleTimeout = null;
 
-  /**
-   * Log debug messages
-   * @param {string} message - Debug message
-   * @param {*} data - Optional data to log
-   */
-  function debug(message, data = "") {
-    if (CONFIG.DEBUG) {
+  function logDebug(message, data = "") {
+    if (enableDebugLogs) {
       console.log(`[Remove Unobserved] ${message}`, data);
     }
   }
 
-  /**
-   * Find and remove divs containing unobserved content
-   * @returns {number} Number of removed elements
-   */
-  function removeUnobservedContent() {
-    if (state.isProcessing) {
-      debug("Already processing, skipping...");
+  function replaceDivWithSubtleMessage(spanElement) {
+    if (elementsProcessed.has(spanElement)) return false;
+    elementsProcessed.add(spanElement);
+
+    let targetElement = spanElement;
+    for (let i = 0; i < maxParentTraversal && targetElement?.parentElement; i++) {
+      targetElement = targetElement.parentElement;
+    }
+
+    if (targetElement?.tagName === "DIV") {
+      const subtleMessageDiv = document.createElement("div");
+      subtleMessageDiv.style.backgroundColor = "transparent";
+      subtleMessageDiv.style.color = "#666";
+      subtleMessageDiv.style.padding = "0.5em";
+      subtleMessageDiv.style.border = "1px dashed #ccc";
+      subtleMessageDiv.style.borderRadius = "6px";
+      subtleMessageDiv.style.margin = "0.25em 0";
+      subtleMessageDiv.style.fontSize = "0.9em";
+      subtleMessageDiv.style.fontStyle = "italic";
+      subtleMessageDiv.textContent = "This content has been removed.";
+
+      targetElement.replaceWith(subtleMessageDiv);
+      logDebug("Replaced div with subtle placeholder", subtleMessageDiv);
+      return true;
+    }
+    return false;
+  }
+
+  function processUnobservedContent() {
+    if (currentlyProcessing) {
+      logDebug("Skipping process because previous one is still running");
       return 0;
     }
 
-    state.isProcessing = true;
-    debug("Starting content removal process");
+    currentlyProcessing = true;
+    logDebug("Started processing unobserved content");
 
     try {
-      const targetSpans = document.querySelectorAll("span");
-      let removedCount = 0;
+      const allSpans = document.querySelectorAll("span");
+      let replacedElementsCount = 0;
 
-      for (const span of targetSpans) {
-        if (
-          span.textContent?.trim() === CONFIG.TARGET_TEXT &&
-          !state.processedElements.has(span)
-        ) {
-          state.processedElements.add(span);
+      for (const span of allSpans) {
+        const trimmedText = span.textContent?.trim() || "";
 
-          // Navigate up the DOM tree
-          let currentElement = span;
-          for (
-            let i = 0;
-            i < CONFIG.PARENT_LEVELS && currentElement?.parentElement;
-            i++
-          ) {
-            currentElement = currentElement.parentElement;
-          }
+        const exactMatchFound = exactMatchTexts.includes(trimmedText);
+        const substringMatchFound = substringMatchTexts.some(sub => trimmedText.includes(sub));
 
-          // Remove if it's a div
-          if (currentElement?.tagName === "DIV") {
-            debug("Removing div", currentElement);
-            currentElement.remove();
-            removedCount++;
+        if ((exactMatchFound || substringMatchFound) && !elementsProcessed.has(span)) {
+          if (replaceDivWithSubtleMessage(span)) {
+            replacedElementsCount++;
           }
         }
       }
 
-      if (removedCount > 0) {
-        debug(`Successfully removed ${removedCount} unobserved content divs`);
+      if (replacedElementsCount > 0) {
+        logDebug(`Replaced ${replacedElementsCount} unobserved content divs`);
       }
 
-      return removedCount;
+      return replacedElementsCount;
     } catch (error) {
-      console.error("[Remove Unobserved] Error during content removal:", error);
+      console.error("[Remove Unobserved] Error processing content:", error);
       return 0;
     } finally {
-      state.isProcessing = false;
+      currentlyProcessing = false;
     }
   }
 
-  /**
-   * Throttled version of removeUnobservedContent
-   */
-  function throttledRemoval() {
-    if (state.throttleTimer) {
-      clearTimeout(state.throttleTimer);
+  function scheduleThrottledProcessing() {
+    if (throttleTimeout) {
+      clearTimeout(throttleTimeout);
     }
-
-    state.throttleTimer = setTimeout(() => {
-      requestAnimationFrame(removeUnobservedContent);
-    }, CONFIG.THROTTLE_DELAY);
+    throttleTimeout = setTimeout(() => {
+      requestAnimationFrame(processUnobservedContent);
+    }, throttleDelayMs);
   }
 
-  /**
-   * Check if a node contains target spans
-   * @param {Node} node - DOM node to check
-   * @returns {boolean} True if node contains target spans
-   */
-  function containsTargetSpans(node) {
+  function nodeContainsTargetSpan(node) {
     if (node.nodeType !== Node.ELEMENT_NODE) return false;
 
     const spans = node.querySelectorAll?.("span");
     if (!spans) return false;
 
     for (const span of spans) {
-      if (span.textContent?.trim() === CONFIG.TARGET_TEXT) {
-        return true;
-      }
+      const text = span.textContent?.trim() || "";
+      if (exactMatchTexts.includes(text)) return true;
+      if (substringMatchTexts.some(sub => text.includes(sub))) return true;
     }
+
     return false;
   }
 
-  /**
-   * Initialize the mutation observer
-   */
-  function initializeObserver() {
-    if (state.observer) {
-      state.observer.disconnect();
+  function startMutationObserver() {
+    if (mutationObserver) {
+      mutationObserver.disconnect();
     }
 
-    state.observer = new MutationObserver((mutations) => {
-      let shouldProcess = false;
+    mutationObserver = new MutationObserver(mutations => {
+      let foundNewTarget = false;
 
       for (const mutation of mutations) {
         if (mutation.type === "childList" && mutation.addedNodes.length > 0) {
           for (const node of mutation.addedNodes) {
-            if (containsTargetSpans(node)) {
-              shouldProcess = true;
+            if (nodeContainsTargetSpan(node)) {
+              foundNewTarget = true;
               break;
             }
           }
-          if (shouldProcess) break;
+          if (foundNewTarget) break;
         }
       }
 
-      if (shouldProcess) {
-        debug("New content detected, scheduling removal");
-        throttledRemoval();
+      if (foundNewTarget) {
+        logDebug("Detected new target content, scheduling processing");
+        scheduleThrottledProcessing();
       }
     });
 
-    // Start observing
-    state.observer.observe(document.body || document.documentElement, {
+    mutationObserver.observe(document.body || document.documentElement, {
       childList: true,
       subtree: true,
     });
 
-    debug("Observer initialized and started");
+    logDebug("Mutation observer started");
   }
 
-  /**
-   * Clean up resources
-   */
-  function cleanup() {
-    debug("Cleaning up resources");
-
-    if (state.observer) {
-      state.observer.disconnect();
-      state.observer = null;
+  function cleanUpOnUnload() {
+    logDebug("Cleaning up before unload");
+    if (mutationObserver) {
+      mutationObserver.disconnect();
+      mutationObserver = null;
     }
-
-    if (state.throttleTimer) {
-      clearTimeout(state.throttleTimer);
-      state.throttleTimer = null;
+    if (throttleTimeout) {
+      clearTimeout(throttleTimeout);
+      throttleTimeout = null;
     }
   }
 
-  /**
-   * Initialize the script
-   */
-  function initialize() {
-    debug("Initializing Remove Unobserved Content script");
+  function initializeScript() {
+    logDebug("Initializing Remove Unobserved Content script");
 
-    // Multiple fallbacks for DOM readiness
-    const startScript = () => {
-      debug("Starting script execution");
+    function startProcessing() {
+      logDebug("Executing initial processing");
       setTimeout(() => {
-        removeUnobservedContent();
-        initializeObserver();
-      }, CONFIG.INIT_DELAY);
-    };
+        processUnobservedContent();
+        startMutationObserver();
+      }, initialDelayMs);
+    }
 
     if (document.readyState === "loading") {
-      document.addEventListener("DOMContentLoaded", startScript);
+      document.addEventListener("DOMContentLoaded", startProcessing);
     } else if (document.readyState === "interactive") {
-      setTimeout(startScript, 500);
+      setTimeout(startProcessing, 500);
     } else {
-      // Document is already complete
-      startScript();
+      startProcessing();
     }
 
-    // Additional fallback - wait for window load
     window.addEventListener("load", () => {
-      debug("Window loaded, ensuring script is running");
-      if (!state.observer) {
+      logDebug("Window loaded; confirming script operation");
+      if (!mutationObserver) {
         setTimeout(() => {
-          removeUnobservedContent();
-          initializeObserver();
+          processUnobservedContent();
+          startMutationObserver();
         }, 500);
       }
     });
 
-    // Cleanup on page unload
-    window.addEventListener("beforeunload", cleanup);
+    window.addEventListener("beforeunload", cleanUpOnUnload);
 
-    debug("Script initialization complete");
+    logDebug("Script initialization complete");
   }
 
-  // Start the script
-  initialize();
+  initializeScript();
 })();
-
