@@ -18,194 +18,121 @@
 (function () {
   "use strict";
 
-  const exactMatchTexts = ["Obserwuj", "Rolki i krótkie filmy"];
-  const substringMatchTexts = ["grupy, które mogą Ci się spodoba"];
-  const maxParentTraversal = 12;
-  const throttleDelayMs = 100;
-  const initialDelayMs = 1000;
-  const enableDebugLogs = true;
+  const CONFIG = {
+    TARGET_TEXTS: [
+      "Obserwuj",
+      "Rolki i krótkie filmy"
+    ],
+    PARENT_LEVELS: 12,
+    THROTTLE_DELAY: 100,
+    INIT_DELAY: 1000,
+    DEBUG: true
+  };
 
-  let mutationObserver = null;
-  let elementsProcessed = new WeakSet();
-  let currentlyProcessing = false;
-  let throttleTimeout = null;
+  const state = {
+    observer: null,
+    processedElements: new WeakSet(),
+    isProcessing: false,
+    throttleTimer: null
+  };
 
-  function logDebug(message, data = "") {
-    if (enableDebugLogs) {
-      console.log(`[Remove Unobserved] ${message}`, data);
-    }
-  }
+  const debug = (msg, data = "") => CONFIG.DEBUG && console.log(`[Remove Unobserved] ${msg}`, data);
 
-  function replaceDivWithSubtleMessage(spanElement) {
-    if (elementsProcessed.has(spanElement)) return false;
-    elementsProcessed.add(spanElement);
+  const createPlaceholder = () => {
+    const notice = document.createElement("div");
+    notice.textContent = "Ukryto sugerowaną treść";
+    Object.assign(notice.style, {
+      background: "#f0f2f5",
+      color: "#606770",
+      fontSize: "14px",
+      padding: "12px",
+      margin: "12px 0",
+      borderRadius: "8px",
+      textAlign: "center",
+      fontStyle: "italic"
+    });
+    return notice;
+  };
 
-    let targetElement = spanElement;
-    for (let i = 0; i < maxParentTraversal && targetElement?.parentElement; i++) {
-      targetElement = targetElement.parentElement;
-    }
+  const removeAndReplaceContent = () => {
+    if (state.isProcessing) return;
+    state.isProcessing = true;
+    debug("Scanning for unwanted content...");
 
-    if (targetElement?.tagName === "DIV") {
-      const subtleMessageDiv = document.createElement("div");
-      subtleMessageDiv.style.backgroundColor = "transparent";
-      subtleMessageDiv.style.color = "#666";
-      subtleMessageDiv.style.padding = "0.5em";
-      subtleMessageDiv.style.border = "1px dashed #ccc";
-      subtleMessageDiv.style.borderRadius = "6px";
-      subtleMessageDiv.style.margin = "0.25em 0";
-      subtleMessageDiv.style.fontSize = "0.9em";
-      subtleMessageDiv.style.fontStyle = "italic";
-      subtleMessageDiv.textContent = "This content has been removed.";
-
-      targetElement.replaceWith(subtleMessageDiv);
-      logDebug("Replaced div with subtle placeholder", subtleMessageDiv);
-      return true;
-    }
-    return false;
-  }
-
-  function processUnobservedContent() {
-    if (currentlyProcessing) {
-      logDebug("Skipping process because previous one is still running");
-      return 0;
-    }
-
-    currentlyProcessing = true;
-    logDebug("Started processing unobserved content");
-
-    try {
-      const allSpans = document.querySelectorAll("span");
-      let replacedElementsCount = 0;
-
-      for (const span of allSpans) {
-        const trimmedText = span.textContent?.trim() || "";
-
-        const exactMatchFound = exactMatchTexts.includes(trimmedText);
-        const substringMatchFound = substringMatchTexts.some(sub => trimmedText.includes(sub));
-
-        if ((exactMatchFound || substringMatchFound) && !elementsProcessed.has(span)) {
-          if (replaceDivWithSubtleMessage(span)) {
-            replacedElementsCount++;
-          }
-        }
-      }
-
-      if (replacedElementsCount > 0) {
-        logDebug(`Replaced ${replacedElementsCount} unobserved content divs`);
-      }
-
-      return replacedElementsCount;
-    } catch (error) {
-      console.error("[Remove Unobserved] Error processing content:", error);
-      return 0;
-    } finally {
-      currentlyProcessing = false;
-    }
-  }
-
-  function scheduleThrottledProcessing() {
-    if (throttleTimeout) {
-      clearTimeout(throttleTimeout);
-    }
-    throttleTimeout = setTimeout(() => {
-      requestAnimationFrame(processUnobservedContent);
-    }, throttleDelayMs);
-  }
-
-  function nodeContainsTargetSpan(node) {
-    if (node.nodeType !== Node.ELEMENT_NODE) return false;
-
-    const spans = node.querySelectorAll?.("span");
-    if (!spans) return false;
+    const spans = document.querySelectorAll("span");
+    let removed = 0;
 
     for (const span of spans) {
-      const text = span.textContent?.trim() || "";
-      if (exactMatchTexts.includes(text)) return true;
-      if (substringMatchTexts.some(sub => text.includes(sub))) return true;
-    }
+      if (CONFIG.TARGET_TEXTS.includes(span.textContent.trim()) && !state.processedElements.has(span)) {
+        state.processedElements.add(span);
 
-    return false;
-  }
+        let target = span;
+        for (let i = 0; i < CONFIG.PARENT_LEVELS && target?.parentElement; i++) {
+          target = target.parentElement;
+        }
 
-  function startMutationObserver() {
-    if (mutationObserver) {
-      mutationObserver.disconnect();
-    }
-
-    mutationObserver = new MutationObserver(mutations => {
-      let foundNewTarget = false;
-
-      for (const mutation of mutations) {
-        if (mutation.type === "childList" && mutation.addedNodes.length > 0) {
-          for (const node of mutation.addedNodes) {
-            if (nodeContainsTargetSpan(node)) {
-              foundNewTarget = true;
-              break;
-            }
-          }
-          if (foundNewTarget) break;
+        if (target?.tagName === "DIV") {
+          const replacement = createPlaceholder();
+          target.replaceWith(replacement);
+          debug("Replaced unwanted content block", target);
+          removed++;
         }
       }
+    }
 
-      if (foundNewTarget) {
-        logDebug("Detected new target content, scheduling processing");
-        scheduleThrottledProcessing();
+    if (removed) debug(`Total replaced: ${removed}`);
+    state.isProcessing = false;
+  };
+
+  const throttleRemove = () => {
+    clearTimeout(state.throttleTimer);
+    state.throttleTimer = setTimeout(() => requestAnimationFrame(removeAndReplaceContent), CONFIG.THROTTLE_DELAY);
+  };
+
+  const containsTarget = node => {
+    if (node.nodeType !== Node.ELEMENT_NODE) return false;
+    const spans = node.querySelectorAll?.("span") || [];
+    return Array.from(spans).some(span => CONFIG.TARGET_TEXTS.includes(span.textContent.trim()));
+  };
+
+  const observeMutations = () => {
+    state.observer?.disconnect();
+    state.observer = new MutationObserver(mutations => {
+      for (const mutation of mutations) {
+        if ([...mutation.addedNodes].some(containsTarget)) {
+          throttleRemove();
+          break;
+        }
       }
     });
 
-    mutationObserver.observe(document.body || document.documentElement, {
-      childList: true,
-      subtree: true,
-    });
+    state.observer.observe(document.body || document.documentElement, { childList: true, subtree: true });
+    debug("Observer initialized");
+  };
 
-    logDebug("Mutation observer started");
-  }
-
-  function cleanUpOnUnload() {
-    logDebug("Cleaning up before unload");
-    if (mutationObserver) {
-      mutationObserver.disconnect();
-      mutationObserver = null;
-    }
-    if (throttleTimeout) {
-      clearTimeout(throttleTimeout);
-      throttleTimeout = null;
-    }
-  }
-
-  function initializeScript() {
-    logDebug("Initializing Remove Unobserved Content script");
-
-    function startProcessing() {
-      logDebug("Executing initial processing");
-      setTimeout(() => {
-        processUnobservedContent();
-        startMutationObserver();
-      }, initialDelayMs);
-    }
+  const initialize = () => {
+    debug("Initializing script");
+    const launch = () => setTimeout(() => {
+      removeAndReplaceContent();
+      observeMutations();
+    }, CONFIG.INIT_DELAY);
 
     if (document.readyState === "loading") {
-      document.addEventListener("DOMContentLoaded", startProcessing);
-    } else if (document.readyState === "interactive") {
-      setTimeout(startProcessing, 500);
+      document.addEventListener("DOMContentLoaded", launch);
     } else {
-      startProcessing();
+      launch();
     }
 
-    window.addEventListener("load", () => {
-      logDebug("Window loaded; confirming script operation");
-      if (!mutationObserver) {
-        setTimeout(() => {
-          processUnobservedContent();
-          startMutationObserver();
-        }, 500);
-      }
+    window.addEventListener("load", () => !state.observer && setTimeout(() => {
+      removeAndReplaceContent();
+      observeMutations();
+    }, 500));
+
+    window.addEventListener("beforeunload", () => {
+      state.observer?.disconnect();
+      clearTimeout(state.throttleTimer);
     });
+  };
 
-    window.addEventListener("beforeunload", cleanUpOnUnload);
-
-    logDebug("Script initialization complete");
-  }
-
-  initializeScript();
+  initialize();
 })();
