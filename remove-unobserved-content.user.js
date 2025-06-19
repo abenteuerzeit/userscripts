@@ -21,12 +21,15 @@
   const CONFIG = {
     TARGET_TEXTS: [
       "Obserwuj",
-      "Rolki i krótkie filmy"
+      "Rolki i krótkie filmy",
+      "Suivre",
+      "Follow"
     ],
     PARENT_LEVELS: 12,
     THROTTLE_DELAY: 100,
     INIT_DELAY: 1000,
-    DEBUG: true,
+    DEBUG: false,
+    USE_ADVICE_API: true, // Feature flag for advice API
   };
 
   const state = {
@@ -36,9 +39,50 @@
     throttleTimer: null,
   };
 
-  const logDebug = (msg, data = "") => CONFIG.DEBUG && console.log(`[Remove Unobserved] ${msg}`, data);
+  const logDebug = (msg, data = "") => {
+    if (CONFIG.DEBUG) {
+      const stack = new Error().stack?.split("\n");
+      const callerLine = stack && stack[2] ? stack[2].trim() : "unknown";
+      const functionNameMatch = callerLine.match(/at (\S+)/);
+      const functionName = functionNameMatch ? functionNameMatch[1] : "anonymous";
+      
+      console.log(`[Remove Unobserved] [${functionName}] ${msg}`, data);
+    }
+  };
 
-  const removeMatchingContent = () => {
+  const getAdvice = async () => {
+    try {
+      const response = await fetch('https://api.adviceslip.com/advice');
+      const data = await response.json();
+      return `"${data.slip.advice}"`;
+    } catch (error) {
+      logDebug("Failed to fetch advice", error);
+      return "Ukryto sugerowaną treść.";
+    }
+  };
+
+  const createReplacementDiv = async () => {
+    const subtleMessageDiv = document.createElement("div");
+    subtleMessageDiv.style.backgroundColor = "transparent";
+    subtleMessageDiv.style.color = "#666";
+    subtleMessageDiv.style.padding = "0.5em";
+    subtleMessageDiv.style.borderRadius = "6px";
+    subtleMessageDiv.style.margin = "0.25em 0";
+    subtleMessageDiv.style.fontSize = "0.9em";
+    subtleMessageDiv.style.fontStyle = "italic";
+
+    if (CONFIG.USE_ADVICE_API) {
+      subtleMessageDiv.textContent = "Pobieranie mądrości...";
+      const advice = await getAdvice();
+      subtleMessageDiv.textContent = advice;
+    } else {
+      subtleMessageDiv.textContent = "Ukryto sugerowaną treść.";
+    }
+
+    return subtleMessageDiv;
+  };
+
+  const removeMatchingContent = async () => {
     if (state.isProcessing) return;
     state.isProcessing = true;
 
@@ -57,19 +101,9 @@
         }
 
         if (targetElement?.tagName === "DIV") {
-          const subtleMessageDiv = document.createElement("div");
-          subtleMessageDiv.style.backgroundColor = "transparent";
-          subtleMessageDiv.style.color = "#666";
-          subtleMessageDiv.style.padding = "0.5em";
-          subtleMessageDiv.style.border = "1px dashed #ccc";
-          subtleMessageDiv.style.borderRadius = "6px";
-          subtleMessageDiv.style.margin = "0.25em 0";
-          subtleMessageDiv.style.fontSize = "0.9em";
-          subtleMessageDiv.style.fontStyle = "italic";
-          subtleMessageDiv.textContent = "Ukryto sugerowaną treść.";
-
-          targetElement.replaceWith(subtleMessageDiv);
-          logDebug("Replaced div with subtle placeholder", subtleMessageDiv);
+          const replacementDiv = await createReplacementDiv();
+          targetElement.replaceWith(replacementDiv);
+          logDebug("Replaced div with placeholder", replacementDiv);
         }
       }
     } catch (error) {
