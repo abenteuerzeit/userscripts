@@ -1,12 +1,10 @@
 // ==UserScript==
-// @name         Remove Unobserved Content
+// @name         Filter Out Unobserved or Upsetting Facebook Content
 // @namespace    https://github.com/abenteuerzeit/userscripts
-// @version      2025-06-19
-// @description  Automatically remove divs containing unobserved content from social media feeds
+// @version      2025-06-20-hybrid
+// @description  Remove suggested or emotionally charged Facebook content (like "Follow" or angry/sad reactions) with hybrid logic
 // @author       abenteuerzeit
-// @match        https://*/*
-// @match        http://*/*
-// @icon         data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==
+// @match        https://*.facebook.com/*
 // @grant        none
 // @run-at       document-idle
 // @homepageURL  https://github.com/abenteuerzeit/userscripts
@@ -18,144 +16,213 @@
 (function () {
   "use strict";
 
-  const CONFIG = {
-    TARGET_TEXTS: [
-      "Obserwuj",
-      "Rolki i krótkie filmy",
-      "Suivre",
-      "Follow"
+  const config = {
+    matchTexts: [
+      "Obserwuj",        // Polish "Follow"
+      "Follow",          // English
+      "Suivre",           // French
+      "Rolki"
     ],
-    PARENT_LEVELS: 12,
-    THROTTLE_DELAY: 100,
-    INIT_DELAY: 1000,
-    DEBUG: false,
-    USE_ADVICE_API: true, // Feature flag for advice API
+    reactionLabels: [
+      "Wrr:",            // angry
+      "Smutne:",         // sad
+      "Strach:"          // fear
+    ],
+    throttleMs: 50,
+    initDelayMs: 500,
+    isDebugMode: false,
+    maxTraversalDepth: 20,
+    replacementMessages: {
+      follow: "Cleared noise",
+      reaction: "Cleared bad vibes",
+      default: "Cleared crap content"
+    }
   };
 
-  const state = {
+  const runtime = {
     observer: null,
-    processedElements: new WeakSet(),
-    isProcessing: false,
-    throttleTimer: null,
+    seen: new WeakSet(),
+    isBusy: false,
+    throttleId: null,
+    processedContainers: new WeakSet()
   };
 
   const logDebug = (msg, data = "") => {
-    if (CONFIG.DEBUG) {
-      const stack = new Error().stack?.split("\n");
-      const callerLine = stack && stack[2] ? stack[2].trim() : "unknown";
-      const functionNameMatch = callerLine.match(/at (\S+)/);
-      const functionName = functionNameMatch ? functionNameMatch[1] : "anonymous";
-      
-      console.log(`[Remove Unobserved] [${functionName}] ${msg}`, data);
-    }
+    if (!config.isDebugMode) return;
+    if (data) console.log(`[FilterOut] ${msg}`, data);
+    else console.log(`[FilterOut] ${msg}`);
   };
 
-  const getAdvice = async () => {
-    try {
-      const response = await fetch('https://api.adviceslip.com/advice');
-      const data = await response.json();
-      return `"${data.slip.advice}"`;
-    } catch (error) {
-      logDebug("Failed to fetch advice", error);
-      return "Ukryto sugerowaną treść.";
-    }
-  };
-
-  const createReplacementDiv = async () => {
-    const subtleMessageDiv = document.createElement("div");
-    subtleMessageDiv.style.backgroundColor = "transparent";
-    subtleMessageDiv.style.color = "#666";
-    subtleMessageDiv.style.padding = "0.5em";
-    subtleMessageDiv.style.borderRadius = "6px";
-    subtleMessageDiv.style.margin = "0.25em 0";
-    subtleMessageDiv.style.fontSize = "0.9em";
-    subtleMessageDiv.style.fontStyle = "italic";
-
-    if (CONFIG.USE_ADVICE_API) {
-      subtleMessageDiv.textContent = "Pobieranie mądrości...";
-      const advice = await getAdvice();
-      subtleMessageDiv.textContent = advice;
-    } else {
-      subtleMessageDiv.textContent = "Ukryto sugerowaną treść.";
-    }
-
-    return subtleMessageDiv;
-  };
-
-  const removeMatchingContent = async () => {
-    if (state.isProcessing) return;
-    state.isProcessing = true;
-
-    try {
-      const spans = document.querySelectorAll("span");
-
-      for (const span of spans) {
-        const match = CONFIG.TARGET_TEXTS.find(txt => span.textContent?.trim().startsWith(txt));
-        if (!match || state.processedElements.has(span)) continue;
-
-        state.processedElements.add(span);
-
-        let targetElement = span;
-        for (let i = 0; i < CONFIG.PARENT_LEVELS && targetElement?.parentElement; i++) {
-          targetElement = targetElement.parentElement;
-        }
-
-        if (targetElement?.tagName === "DIV") {
-          const replacementDiv = await createReplacementDiv();
-          targetElement.replaceWith(replacementDiv);
-          logDebug("Replaced div with placeholder", replacementDiv);
-        }
+  function findPostContainer(el) {
+    let current = el;
+    let depth = 0;
+    while (current && current !== document.body && depth < config.maxTraversalDepth) {
+      if (
+        current.hasAttribute('aria-posinset') && current.hasAttribute('aria-describedby')
+        || current.getAttribute('data-virtualized') !== null
+        || (current.tagName === 'DIV' &&
+            current.children.length > 3 &&
+            current.querySelector('[role="button"]') &&
+            current.querySelector('span[dir]'))
+      ) {
+        return current;
       }
-    } catch (error) {
-      console.error("[Remove Unobserved] Error:", error);
-    } finally {
-      state.isProcessing = false;
+      current = current.parentElement;
+      depth++;
     }
+    return null;
+  }
+
+  async function createPlaceholder(messageType = 'default') {
+    const div = document.createElement("div");
+    Object.assign(div.style, {
+      backgroundColor: "transparent",
+      color: "#666",
+      padding: "0.5em",
+      borderRadius: "6px",
+      margin: "0.25em 0",
+      fontSize: "0.9em",
+      fontStyle: "italic"
+    });
+    const msg = config.replacementMessages[messageType] || config.replacementMessages.default;
+    div.textContent = msg;
+    div.setAttribute('data-filtered-content', messageType);
+    return div;
+  }
+
+  async function replacePostContent(triggerEl, triggerType) {
+    const post = findPostContainer(triggerEl);
+    if (!post) {
+      logDebug("No suitable container found for replacement");
+      return false;
+    }
+    if (runtime.processedContainers.has(post)) {
+      logDebug("Post container already replaced, skipping");
+      return false;
+    }
+    runtime.processedContainers.add(post);
+
+    const placeholder = await createPlaceholder(triggerType);
+    post.replaceWith(placeholder);
+    logDebug(`Replaced post content for type: ${triggerType}`, post);
+    return true;
+  }
+
+  async function replaceClosestPlainDiv(el) {
+    let node = el.parentElement;
+    while (node && !(node.tagName === "DIV" && node.attributes.length === 0)) {
+      node = node.parentElement;
+    }
+    if (!node) {
+      logDebug("No plain <div> ancestor found for replacement", el);
+      return false;
+    }
+    const placeholder = await createPlaceholder('follow');
+    node.replaceWith(placeholder);
+    logDebug("Replaced closest plain <div> for follow span", node);
+    return true;
+  }
+
+  function collectFollowSpans() {
+    return Array.from(document.querySelectorAll("span"))
+      .filter(s => config.matchTexts.some(t => s.textContent?.trim().startsWith(t)))
+      .filter(s => !runtime.seen.has(s));
+  }
+
+  function collectReactionElements() {
+    return config.reactionLabels.flatMap(label =>
+      Array.from(document.querySelectorAll(`[aria-label^="${label}"]`))
+    ).filter(el => !runtime.seen.has(el));
+  }
+
+  async function replaceMatchingContent() {
+    if (runtime.isBusy) return;
+    runtime.isBusy = true;
+
+    try {
+      const followSpans = collectFollowSpans();
+      const reactionEls = collectReactionElements();
+
+      logDebug("Found follow spans:", followSpans.length);
+      logDebug("Found reaction elements:", reactionEls.length);
+
+      for (const span of followSpans) {
+        runtime.seen.add(span);
+        await replaceClosestPlainDiv(span);
+      }
+
+      for (const reaction of reactionEls) {
+        runtime.seen.add(reaction);
+        await replacePostContent(reaction, 'reaction');
+      }
+    } catch (e) {
+      console.error("[FilterOut] Error during replacement:", e);
+    } finally {
+      runtime.isBusy = false;
+    }
+  }
+
+  const throttleReplace = () => {
+    if (runtime.throttleId) clearTimeout(runtime.throttleId);
+    runtime.throttleId = setTimeout(() => {
+      requestAnimationFrame(replaceMatchingContent);
+    }, config.throttleMs);
   };
 
-  const scheduleRemoval = () => {
-    if (state.throttleTimer) clearTimeout(state.throttleTimer);
-    state.throttleTimer = setTimeout(() => requestAnimationFrame(removeMatchingContent), CONFIG.THROTTLE_DELAY);
-  };
-
-  const containsTarget = node => {
+  const shouldProcessNode = (node) => {
     if (node.nodeType !== Node.ELEMENT_NODE) return false;
+
     const spans = node.querySelectorAll?.("span") ?? [];
-    return Array.from(spans).some(span => CONFIG.TARGET_TEXTS.some(txt => span.textContent?.trim().startsWith(txt)));
+    const hasFollow = [...spans].some(span =>
+      config.matchTexts.some(text =>
+        span.textContent?.trim().startsWith(text)
+      )
+    );
+
+    const hasReaction = config.reactionLabels.some(label =>
+      node.querySelector(`[aria-label^="${label}"]`)
+    );
+
+    return hasFollow || hasReaction;
   };
 
-  const startObserver = () => {
-    state.observer = new MutationObserver(mutations => {
+  function observeDomMutations() {
+    runtime.observer = new MutationObserver(mutations => {
       for (const { addedNodes } of mutations) {
-        if ([...addedNodes].some(containsTarget)) {
-          logDebug("Detected new target content");
-          scheduleRemoval();
+        if ([...addedNodes].some(shouldProcessNode)) {
+          logDebug("DOM mutation detected, triggering replacement");
+          throttleReplace();
           break;
         }
       }
     });
 
-    state.observer.observe(document.body || document.documentElement, {
+    runtime.observer.observe(document.body || document.documentElement, {
       childList: true,
-      subtree: true,
+      subtree: true
     });
-  };
 
-  const start = () => {
-    setTimeout(() => {
-      removeMatchingContent();
-      startObserver();
-    }, CONFIG.INIT_DELAY);
-  };
-
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", start);
-  } else {
-    start();
+    logDebug("DOM observer initialized");
   }
 
-  window.addEventListener("beforeunload", () => {
-    if (state.observer) state.observer.disconnect();
-    if (state.throttleTimer) clearTimeout(state.throttleTimer);
-  });
+  function initialize() {
+    setTimeout(() => {
+      replaceMatchingContent();
+      observeDomMutations();
+    }, config.initDelayMs);
+  }
+
+  function cleanup() {
+    runtime.observer?.disconnect();
+    if (runtime.throttleId) clearTimeout(runtime.throttleId);
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", initialize);
+  } else {
+    initialize();
+  }
+
+  window.addEventListener("beforeunload", cleanup);
+
 })();
