@@ -10,8 +10,8 @@
 // @run-at        document-start
 // @homepageURL   https://github.com/abenteuerzeit/userscripts
 // @supportURL    https://github.com/abenteuerzeit/userscripts/issues
-// @updateURL     https://raw.githubusercontent.com/abenteuerzeit/userscripts/main/facebook-to-mehbook.js
-// @downloadURL   https://raw.githubusercontent.com/abenteuerzeit/userscripts/main/facebook-to-mehbook.js
+// @updateURL     https://raw.githubusercontent.com/abenteuerzeit/userscripts/refs/heads/development/facebook-to-mehbook.js
+// @downloadURL   https://raw.githubusercontent.com/abenteuerzeit/userscripts/refs/heads/development/facebook-to-mehbook.js
 // ==/UserScript==
 
 (function() {
